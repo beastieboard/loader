@@ -1,93 +1,97 @@
-import { StoreApi, UseBoundStore, create } from 'zustand'
+import { UseBoundStore, StoreApi } from 'zustand'
+
+
 
 type Listener<T> = (val: T) => void
-type Subscribe<T> = (listener: Listener<T>) => Unsubscribe
+export type Subscribe<T> = (listener: Listener<T>) => Unsubscribe
 type Unsubscribe = () => void
 
-
-type ZustandStore<T> = UseBoundStore<StoreApi<T>>
-
-
-export type UseFunc = {
-  <T>(load: Loader<T>): Promise<T>
-  <T,A>(load: Loader<T>, selector?: (val: T) => A): Promise<A>
-  schedule: (ms: number) => void
-  key: (key: any) => void
-  event: <T>(id: string, subscribe: Subscribe<T>) => T
-  zustand: {
-    <T>(store: ZustandStore<T>): T
-    <T,A>(store: ZustandStore<T>, selector?: (val: T) => A): A
-  }
-  memo: <T>(id: string, func: LoaderFunc<T>) => Promise<T>
-  cleanup: (localId: string, cleanup: Unsubscribe) => void
-  loaderCache: (filter: (id: string) => boolean) => typeof loaderCache
-}
-
-
-type ToLoader<T> = [name: string, load: LoaderFunc<T>] | [LoaderParams<T>] | [Loader<T>]
-
-const useOnce: UseFunc = (loader: any) => Loader.from(loader).once()
-useOnce.schedule = () => {}
-useOnce.key = () => {}
-useOnce.event = () => undefined as any
-useOnce.zustand = <T>(store: ZustandStore<T>) => "TODO"
-useOnce.memo = (_, func) => func(useOnce, undefined as any)
-useOnce.cleanup = (_, cleanup) => cleanup()
-useOnce.loaderCache = useLoaderCache
-
-
-type LoaderFunc<T> = (use: UseFunc, prev: T) => Promise<T>
-
-export const loaderCache: { [id: string]: Loader<any> } = {}
-if (typeof window != 'undefined' && process.env.NODE_ENV == "development") {
-  (window as any).loaderCache = loaderCache
-}
-
-export const loaderCacheChanged = create(() => 0)
-const triggerLoaderCacheChanged = () => loaderCacheChanged.setState((n) => n+1)
-
-function useLoaderCache(this: UseFunc, filter: (id: string) => boolean) {
-  this.zustand(loaderCacheChanged)
-  return Object.fromEntries(Object.entries(loaderCache).filter(([k, _]) => filter(k)))
-}
- 
-export type LoaderParams<T> = {
+type LoaderParams<T> = {
   id: string
   run: LoaderFunc<T>
   unloadDelayMS?: number
 }
 
+// Supports non DOM event interfaces
+type Eventable = {
+  addEventListener: (type: string, cb: (e: any) => void) => void
+  removeEventListener: (type: string, cb: (e: any) => void) => void
+}
+
+export type UseApi = {
+  <T>(func: LoaderFunc<T>, id: string): Promise<T>
+  <T>(loader: ToLoader<T>): Promise<T>
+  schedule: (ms: number) => void
+  key: (key: any) => void
+  zustand: {
+    <T>(store: UseBoundStore<StoreApi<T>>): T
+    <T,A>(id: string, store: UseBoundStore<StoreApi<T>>, selector: (val: T) => A): A
+  }
+  subscribe: {
+    <T>(id: string, subscribe: Subscribe<T>): T,
+    <T, A>(id: string, subscribe: Subscribe<T>, selector: (val: T) => A): A
+  },
+  cleanup: (cleanup: () => void) => void
+  //memo: {
+  //  <T>(func: NamedLoaderFunc<T>): Promise<T>
+  //  <T>(id: string, func: LoaderFunc<T>): Promise<T>
+  //  <T,A>(id: string, func: LoaderFunc<T>, selector: (val: T) => A): Promise<A>
+  //}
+  //eventListener: {
+  //  <T extends Event>(elem: Eventable, eventKey: string): T
+  //  <T extends Event, O>(elem: Eventable, eventKey: string, selector: (event: T) => O): O
+  //}
+}
+
+
+type ToLoader<T> = LoaderParams<T> | Loader<T>
+
+const useOnce: UseApi = async (...args: any[]) => {
+  let loader = args.length == 2 ? new Loader({ id: args[1], run: args[0] }) : Loader.from(args[0])
+  return await loader.once()
+}
+useOnce.schedule = () => {}
+useOnce.key = () => {}
+useOnce.zustand = (store: any) => store.getState()
+useOnce.subscribe = () => undefined
+useOnce.cleanup = () => {}
+
+
+export type LoaderFunc<T> = (use: UseApi, prev: T | undefined) => Promise<T>
+export type NamedLoaderFunc<T> = (use: UseApi, prev: T) => Promise<T>
+
+export const loaderCache: { [id: string]: Loader<any> } = {}
+
 type Subscription = {
   listener: (val: any) => void
   unsub: Unsubscribe
-  last: any
+  last: { val: any } | undefined
+  defer: boolean
 }
 
 
 type GoMode = (
   "CACHED"  | // Return cached value or run for first time
-  "PRELOAD" | // Same as Cached but will schedule even if no listeners
   "TRIGGER"   // Run again but don't pull dependencies
 )
+
 
 export class Loader<T> implements Loader<T> {
 
   /*
-   * This class is literal chainsaw juggling, due to it's degree of concurrency.
-   *
-   * Continue at your peril.
+   * If this is working it should probably be left alone!
    */
 
   readonly id: string
   private nextSubId = 0
-  private last: { val: T, cacheKey: any }
+  private last: { val: T, cacheKey: any } | undefined
   private subscribers: { [id: string]: Listener<T> } = {}
-  private request: Promise<{ val: T, schedule: number }>
+  private request: Promise<T> | undefined
   private subscriptions: { [id: string]: Subscription } = {}
-  private eventLast: { [id: string]: any } = {}
   private runTimeout: any
   private unloadTimeout: any
   private unloadDelayMS: number
+  private cleanup: (() => void)[] = []
 
   readonly run: LoaderFunc<T>
 
@@ -95,18 +99,19 @@ export class Loader<T> implements Loader<T> {
 
     this.id = params.id
     this.run = params.run
+
     this.unloadDelayMS = params.unloadDelayMS || 0
 
-    for (let name of ['go', 'subscribe', 'getState']) {
-      let method = this[name]
-      this[name] = (...args: any[]) => {
+    for (let name of ['go', 'subscribe', 'getState'] as const) {
+      let method = this[name] as any
+      ;(this as any)[name] = (...args: any[]) => {
         let that = loaderCache[this.id] || this
         return method.apply(that, args)
       }
     }
   }
 
-  subscribe(listener: Listener<T>): Unsubscribe {
+  subscribe(listener: Listener<T>, reason=""): Unsubscribe {
 
     if (this.unloadTimeout) {
       clearTimeout(this.unloadTimeout)
@@ -118,10 +123,9 @@ export class Loader<T> implements Loader<T> {
 
     if (!loaderCache[this.id]) {
       loaderCache[this.id] = this
-      triggerLoaderCacheChanged()
     }
 
-    this.go()
+    this.go("CACHED", `subscribe() (start process) by ${reason}`)
 
     return () => {
       delete this.subscribers[subId]
@@ -133,7 +137,7 @@ export class Loader<T> implements Loader<T> {
     return this.last?.val
   }
 
-  async once(): Promise<T> {
+  async once(): Promise<T | undefined> {
     return await this.run(useOnce, this.getState())
   }
 
@@ -141,171 +145,216 @@ export class Loader<T> implements Loader<T> {
     return await this.go("TRIGGER")
   }
 
-  async preload(): Promise<T> {
-    return await this.go("PRELOAD")
-  }
+  async go(mode: GoMode = "CACHED", _reason=""): Promise<T> {
 
-  async go(mode: GoMode = "CACHED"): Promise<T> {
+    if (!loaderCache[this.id]) {
+      loaderCache[this.id] = this
+    }
 
+    /*
+     * Happy path
+     */
     if (mode != "TRIGGER" && this.last) {
       return this.last.val
     }
 
+
+    /*
+     * Piggyback?
+     */
     if (this.request) {
-      let val = (await this.request).val
-      if (mode == "TRIGGER") {
-        if (this.request) {
-          return (await this.request).val
-        }
-      } else {
+      // If already running, just wait for the result of the active request
+      let val = await this.request
+
+      if (mode != "TRIGGER") {
         return val
+      }
+
+      // If trigger and there is a request, it's likely not the same request as before,
+      // which means that another run has started since we were triggered. Piggyback
+      // onto it.
+      if (this.request) {
+        return await this.request
       }
     }
 
-    // Clear schedules
+    // Sanity?
+    if (this.request) throw "already have request"
+
+    // MAKE time
     clearTimeout(this.runTimeout)
     this.runTimeout = null
 
-    // Go
-    if (this.request) throw "already have request"
-    this.request = this._go()
-    let { val, schedule } = await this.request
-    this.request = null
+    // We need to do a funny little dance here; If we assign `this.request = await this._go()`,
+    // it can cause a loop if a bunch of sync calls trigger again before this.request
+    // is actually assigned (because for it to be assigned, something has to yield).
+    // So, use an intermediary promise:
+    let { resolve, reject, p } = makeLater()
+    this.request = p
 
-    // Schedule
-    if (schedule && (mode == "PRELOAD" || !isEmptyObject(this.subscribers))) {
-      this.runTimeout = window.setTimeout(() => this.go("TRIGGER"), schedule)
+    let guts = this.#guts()
+
+    let val: any
+    try {
+      while (this.cleanup.length) {
+        (this.cleanup as any).pop()()
+      }
+      val = await this.run(guts.use, this.getState())
+    } catch (e) {
+      reject(e)
+      throw e
+    } finally {
+      this.request = undefined
     }
 
-    mode == "PRELOAD" || this.checkStop()
+    resolve(val)
+    guts.propagate(val)
 
     return val
   }
 
-  private async _go(): Promise<{ val: T, schedule: number }> {
+  #guts() {
 
     let unusedDeps = new Set(Object.keys(this.subscriptions))
+    let subscribeCalls = new Set()
     let schedule: number = 0
     let cacheKey: any
 
     const checkSubscribe = <B>(
-      id: string,
+      id: string | any[],
       subscribable: Pick<Loader<B>, 'subscribe'>,
-      selector: (val: B) => any,
-      out: B
+      selector: ((val: B) => any) | undefined,
+      defer=false
     ) => {
-      if (!this.subscriptions[id]) {
+
+      if (Array.isArray(id)) {
+        id = JSON.stringify(id.map(objectId))
+      }
+
+      if (this.subscriptions[id]) {
+        unusedDeps.delete(id)
+      } else {
+
+        if (subscribeCalls.has(id)) {
+          throw `Loader(${this.id}) duplicate subscriber: ${id}`
+        }
+        subscribeCalls.add(id)
+
+        if (selector && typeof selector != 'function') {
+          console.log('selector is weird', this.id, id, selector)
+        }
 
         let sub = this.subscriptions[id] = {
           listener: undefined,
           last: undefined,
           unsub: undefined,
-        }
-
-        let updated = (val: B) => {
-          if (selector && typeof selector != 'function') {
-            console.log('selector', this.id, id, selector)
-          }
-          val = selector ? selector(val) : val
-          let isUpdated = !shallowCompare(val, sub.last)
-          sub.last = val
-          return isUpdated
-        }
+          defer
+        } as any
 
         sub.listener = (val: B) => {
-          if (updated(val)) {
-            //console.log(`${id} triggers ${this.id}`)
-            this.go("TRIGGER")
+          val = selector ? selector(val) : val
+          let isUpdated = !shallowCompare(val, sub.last?.val)
+          sub.last = { val } // shallowCopy(val)
+
+          if (isUpdated && !sub.defer) {
+            this.go("TRIGGER", `new input from ${id}`)
           }
+
+          sub.defer = false
         }
 
-        // first update the key before calling subscribe so we can cache the result
-        updated(out)
-        sub.unsub = subscribable.subscribe(sub.listener)
+        Object.defineProperty(sub.listener, "name", { value: `Loader:${this.id}` });
 
-      } else {
-        unusedDeps.delete(id)
+        // first update the key before calling subscribe so we can cache the result
+        sub.unsub = subscribable.subscribe(sub.listener, this.id)
       }
 
-      return out
+      return this.subscriptions[id]
     }
+    
+    const use: UseApi = async (...args: any) => {
 
-    const use: UseFunc = async <A,B>(loader: Loader<A>, selector?: (val: A) => B) => {
-      return checkSubscribe(loader.id, loader, selector, await loader.go("PRELOAD"))
+      let loader: Loader<any>
+
+      if (args.length == 2) {
+        let id = `!loader-${args[1]}`
+        loader = new Loader({ id, run: args[0] })
+      } else {
+        loader = Loader.from(args[0])
+      }
+
+      let sub = checkSubscribe(loader.id, loader, undefined, true)
+      let out = await loader.go()
+      if (sub.defer) sub.listener(out) // prime
+      return out
     }
 
     use.schedule = (ms) => { schedule = ms }
 
     use.key = (k: any) => { cacheKey = k }
 
-    use.zustand = (store: any, selector?: any) => {
-      NotImplemented
+    use.zustand = (...args: any[]) => {
+      let [id, store, selector] = args
+      if (args.length == 1) {
+        store = args[0]
+        id = `!zustand-${_objectId(store)}`
+      }
+      checkSubscribe(id, store, selector)
+      let state = store.getState()
+      return selector ? selector(state) : state
     }
 
-    use.cleanup = (id, f: Unsubscribe) => {
-      id = `!cleanup-${id}`
+    use.subscribe = (id: string, subscribe: any, selector?: any) => {
+      id = `!subscribe-${id}`
+      return checkSubscribe(id, { subscribe }, selector).last?.val
+    }
 
-      if (unusedDeps[id]) {
+    use.cleanup = (cleanup) => this.cleanup.push(cleanup)
+
+    //use.eventListener = (target: Eventable, eventKey: string, selector?: any) => {
+
+    //  return use.subscribe(
+    //    `${objectId(target)}-${eventKey}`,
+    //    (listener) => {
+    //      target.addEventListener(eventKey, listener)
+    //      return () => target.removeEventListener(eventKey, listener)
+    //    },
+    //    selector
+    //  ) as any
+    //}
+    //
+
+    let propagate = (val: T) => {
+
+      if (cacheKey === undefined) {
+        cacheKey = val
+      }
+
+      // Dispatch subscribers
+      if (!this.last || !shallowCompare(cacheKey, this.last.cacheKey)) {
+        this.last = { val, cacheKey }
+        for (let k in this.subscribers) {
+          this.subscribers[k](val)
+        }
+      }
+
+      // Unsubscribe from unused
+      for (let id of unusedDeps) {
         if (this.subscriptions[id]) {
           this.subscriptions[id].unsub()
           delete this.subscriptions[id]
         }
       }
 
-      let subscribe = () => f
-      checkSubscribe(id, { subscribe }, null, undefined)
-    }
-
-    use.event = (id, subscribeOrig) => {
-      id = `!event-${id}`
-
-      let subscribe: Loader<any>['subscribe'] = (listener) => (
-        subscribeOrig((val) => {
-          if (!Object.hasOwn(this.eventLast, id) || !shallowCompare(this.eventLast[id], val)) {
-            this.eventLast[id] = val
-            listener(val)
-          }
-        })
-      )
-
-      return checkSubscribe(id, { subscribe }, null, this.eventLast[id])
-    }
-
-    use.memo = (id, run) => {
-      id = `${this.id}/${id}`
-      return use(new Loader({ id, run }))
-    }
-
-    use.loaderCache = useLoaderCache
-
-    let val: T
-    try {
-      val = await this.run(use, this.getState())
-    } catch (e) {
-      console.log(`Exception in loader "${this.id}":`, e)
-      throw e
-    }
-
-    if (cacheKey === undefined) {
-      cacheKey = val
-    }
-
-    if (!this.last || !shallowCompare(cacheKey, this.last.cacheKey)) {
-      this.last = { val, cacheKey }
-      for (let k in this.subscribers) {
-        this.subscribers[k](val)
+      // Schedule
+      if (schedule && !isEmptyObject(this.subscribers)) {
+        this.runTimeout = setTimeout(() => this.go("TRIGGER", 'scheduled'), schedule)
       }
+
+      this.checkStop()
     }
 
-    for (let id of unusedDeps) {
-      if (this.subscriptions[id]) {
-        this.subscriptions[id].unsub()
-        delete this.subscriptions[id]
-        delete this.eventLast[id]
-      }
-    }
-
-    return { val, schedule }
+    return { unusedDeps, subscribeCalls, schedule, cacheKey, propagate, use }
   }
 
   checkStop() {
@@ -315,12 +364,16 @@ export class Loader<T> implements Loader<T> {
     }
 
     let unload = () => {
-      if (isEmptyObject(this.subscribers)) {
+      if (isEmptyObject(this.subscribers) && !this.request) {
+        while (this.cleanup.length) {
+          (this.cleanup as any).pop()()
+        }
         delete loaderCache[this.id]
-        triggerLoaderCacheChanged()
-        Object.values(this.subscriptions).map((s) => s.unsub())
+        for (let [k, v] of Object.entries(this.subscriptions)) {
+          delete this.subscriptions[k]
+          v.unsub()
+        }
         this.subscriptions = {}
-        this.eventLast = {}
         this.last = undefined
       }
     }
@@ -334,55 +387,64 @@ export class Loader<T> implements Loader<T> {
     }
   }
 
-  static from<A>(...args: ToLoader<A>) {
-    if (args.length == 1) {
-      if (args[0] instanceof Loader) {
-        return args[0]
-      } else {
-        return new Loader(args[0])
-      }
-    } else {
-      return new Loader({ id: args[0], run: args[1] })
-    }
+  static from<A>(arg: ToLoader<A>) {
+    return arg instanceof Loader ? arg : new Loader(arg)
   }
 }
 
-function scheduleLoader(timestampMs: number) {
-  return new Loader({
-    id: `schedule-${timestampMs}`,
-    async run(use) {
 
-      let expiresIn = new Date().getTime() - timestampMs
+import { useMemo, useEffect, useState } from 'react'
+import {isEmptyObject} from './utils'
 
-      if (expiresIn <= 0) {
-        return true
-      }
 
-      use.event('timeout', (f) => {
-        let t = setTimeout(f, expiresIn)
-        return () => clearTimeout(t)
-      })
+const randomLoaderID = () => `loader-${Math.random()}`
 
-      return false
+export function useLoader<T>(arg: ToLoader<T> | LoaderFunc<T>): T | undefined {
+  if (typeof arg == 'function') {
+    arg = useMemo(() => ({ id: randomLoaderID(), run: arg } as LoaderParams<T>), [])
+  }
+  let loader = arg instanceof Loader ? arg : new Loader(arg)
+
+  // we wrap the object in an array so that React doesn't mistake it for something it's not
+  let [r, setR] = useState<[T | undefined]>(() => [loader.getState()])
+
+  useEffect(() => {
+    if (r !== loader.getState()) {
+      setR([loader.getState()])
     }
+    return loader.subscribe((r) => setR([r]))
+  }, [loader.id])
+
+  return r[0]
+}
+
+export async function runLoader<T>(arg: ToLoader<T> | LoaderFunc<T>) {
+  if (typeof arg == 'function') {
+    arg = { id: randomLoaderID(), run: arg }
+  }
+  let loader = arg instanceof Loader ? arg : new Loader(arg)
+
+  return await new Promise<T>((resolve) => {
+    let unsub = loader.subscribe((r) => {
+      unsub()
+      resolve(r)
+    })
   })
 }
 
-
-import { useState, useEffect, useMemo } from 'react'
-
-export function useLoader<T>(arg: Loader<T> | LoaderParams<T>): T {
-  let loader = arg instanceof Loader ? arg : new Loader(arg)
-  let [r, setR] = useState<T>(() => loader.getState())
-  useEffect(() => loader.subscribe(setR), [loader.id])
-  return r
+function makeLater<T=any>() {
+  let resolve: any, reject: any
+  let p = new Promise<T>((_res, _rej) => {
+    resolve = _res
+    reject = _rej
+  })
+  return { p, resolve, reject }
 }
 
-export function useLoaderFunc<T>(run: LoaderFunc<T>): T {
-  let id = useMemo(() => `loader-${Math.random()}`, [])
-  return useLoader({ id, run })
-}
 
+/*
+ * Compare to check if should propagate
+ */
 export function shallowCompare(prev: any, obj: any) {
   if (prev === obj) return true
   if (typeof obj != 'object' || typeof prev != 'object') return false
@@ -397,22 +459,53 @@ export function shallowCompare(prev: any, obj: any) {
   return true
 }
 
-const objectId = (() => {
+/*
+ * Copy to ensure changes to mutable objects arent missed
+ */
+export function shallowCopy(val: any) {
+  if (typeof val != 'object') {
+    return val
+  }
+
+  if (Array.isArray(val)) {
+    return val.slice(0)
+  }
+
+  return {...val}
+}
+
+
+/*
+ * Utility function for an addEventListener interface, i.e.:
+ *
+ * use.subscribe('resize', eventSubscriber(window, 'resize'))
+ */
+export function eventSubscriber<T>(
+  target: Eventable,
+  type: string
+): Subscribe<T> {
+  return (listener: any) => {
+    target.addEventListener(type, listener)
+    return () => target.removeEventListener(type, listener)
+  }
+}
+
+const _objectId = (() => {
   let currentId = 0;
   const map = new WeakMap();
-
-  return (object: any) => {
-    if (!map.has(object)) {
-      map.set(object, ++currentId);
+  return (obj: any) => {
+    if (!map.has(obj)) {
+      map.set(obj, currentId++)
     }
-
-    return map.get(object);
-  };
-})();
-
-export function isEmptyObject(obj: Object) {
-  for (let k in obj) {
-    if (obj.hasOwnProperty(k)) return false;
+    return map.get(obj)
   }
-  return true;
+})()
+const objectId = (obj: any) => {
+  if (typeof obj != 'object' && typeof obj != 'function') {
+    return String(obj)
+  }
+
+  return String(_objectId(obj))
 }
+
+export const anyLoader = new Loader<any>({ id: "void", async run() {} })
