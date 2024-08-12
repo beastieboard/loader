@@ -2,10 +2,14 @@
   "name": "loader",
   "version": "0.1.0",
   "description": "Like React for async data loading",
-  "module": "src/index.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "repository": "git@github.com:beastieboard/loader.git",
   "author": "Beastie Developers (dev@beastie.fi)",
   "license": "MIT",
+  "scripts": {
+    "build": "tsc"
+  },
   "devDependencies": {
     "@types/node": "^20.8.0",
     "@types/react": "^18.2.24",
