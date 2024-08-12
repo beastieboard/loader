@@ -1,12 +1,9 @@
-"use strict";
 var __classPrivateFieldGet = (this && this.__classPrivateFieldGet) || function (receiver, state, kind, f) {
     if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a getter");
     if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot read private member from an object whose class did not declare it");
     return kind === "m" ? f : kind === "a" ? f.call(receiver) : f ? f.value : state.get(receiver);
 };
 var _Loader_instances, _a, _Loader_guts;
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.anyLoader = exports.eventSubscriber = exports.shallowCopy = exports.shallowCompare = exports.runLoader = exports.useLoader = exports.Loader = exports.loaderCache = void 0;
 const useOnce = async (...args) => {
     let loader = args.length == 2 ? new Loader({ id: args[1], run: args[0] }) : Loader.from(args[0]);
     return await loader.once();
@@ -16,8 +13,9 @@ useOnce.key = () => { };
 useOnce.zustand = (store) => store.getState();
 useOnce.subscribe = () => undefined;
 useOnce.cleanup = () => { };
-exports.loaderCache = {};
-class Loader {
+useOnce.event = () => undefined;
+export const loaderCache = {};
+export class Loader {
     constructor(params) {
         _Loader_instances.add(this);
         this.nextSubId = 0;
@@ -30,7 +28,7 @@ class Loader {
         for (let name of ['go', 'subscribe', 'getState']) {
             let method = this[name];
             this[name] = (...args) => {
-                let that = exports.loaderCache[this.id] || this;
+                let that = loaderCache[this.id] || this;
                 return method.apply(that, args);
             };
         }
@@ -42,8 +40,8 @@ class Loader {
         }
         let subId = this.nextSubId++;
         this.subscribers[subId] = listener;
-        if (!exports.loaderCache[this.id]) {
-            exports.loaderCache[this.id] = this;
+        if (!loaderCache[this.id]) {
+            loaderCache[this.id] = this;
         }
         this.go("CACHED", `subscribe() (start process) by ${reason}`);
         return () => {
@@ -61,8 +59,8 @@ class Loader {
         return await this.go("TRIGGER");
     }
     async go(mode = "CACHED", _reason = "") {
-        if (!exports.loaderCache[this.id]) {
-            exports.loaderCache[this.id] = this;
+        if (!loaderCache[this.id]) {
+            loaderCache[this.id] = this;
         }
         /*
          * Happy path
@@ -118,15 +116,15 @@ class Loader {
         return val;
     }
     checkStop() {
-        if (!(0, utils_1.isEmptyObject)(this.subscribers)) {
+        if (!isEmptyObject(this.subscribers)) {
             return;
         }
         let unload = () => {
-            if ((0, utils_1.isEmptyObject)(this.subscribers) && !this.request) {
+            if (isEmptyObject(this.subscribers) && !this.request) {
                 while (this.cleanup.length) {
                     this.cleanup.pop()();
                 }
-                delete exports.loaderCache[this.id];
+                delete loaderCache[this.id];
                 for (let [k, v] of Object.entries(this.subscriptions)) {
                     delete this.subscriptions[k];
                     v.unsub();
@@ -148,7 +146,6 @@ class Loader {
         return arg instanceof _a ? arg : new _a(arg);
     }
 }
-exports.Loader = Loader;
 _a = Loader, _Loader_instances = new WeakSet(), _Loader_guts = function _Loader_guts() {
     let unusedDeps = new Set(Object.keys(this.subscriptions));
     let subscribeCalls = new Set();
@@ -222,17 +219,7 @@ _a = Loader, _Loader_instances = new WeakSet(), _Loader_guts = function _Loader_
         return checkSubscribe(id, { subscribe }, selector).last?.val;
     };
     use.cleanup = (cleanup) => this.cleanup.push(cleanup);
-    //use.eventListener = (target: Eventable, eventKey: string, selector?: any) => {
-    //  return use.subscribe(
-    //    `${objectId(target)}-${eventKey}`,
-    //    (listener) => {
-    //      target.addEventListener(eventKey, listener)
-    //      return () => target.removeEventListener(eventKey, listener)
-    //    },
-    //    selector
-    //  ) as any
-    //}
-    //
+    use.event = (elem, type) => (use.subscribe(`${objectId(elem)}-${type}`, eventSubscriber(elem, type)));
     let propagate = (val) => {
         if (cacheKey === undefined) {
             cacheKey = val;
@@ -252,33 +239,39 @@ _a = Loader, _Loader_instances = new WeakSet(), _Loader_guts = function _Loader_
             }
         }
         // Schedule
-        if (schedule && !(0, utils_1.isEmptyObject)(this.subscribers)) {
+        if (schedule && !isEmptyObject(this.subscribers)) {
             this.runTimeout = setTimeout(() => this.go("TRIGGER", 'scheduled'), schedule);
         }
         this.checkStop();
     };
     return { unusedDeps, subscribeCalls, schedule, cacheKey, propagate, use };
 };
-const react_1 = require("react");
-const utils_1 = require("./utils");
+import { isEmptyObject, makeLater } from './utils';
 const randomLoaderID = () => `loader-${Math.random()}`;
-function useLoader(arg) {
-    if (typeof arg == 'function') {
-        arg = (0, react_1.useMemo)(() => ({ id: randomLoaderID(), run: arg }), []);
-    }
-    let loader = arg instanceof Loader ? arg : new Loader(arg);
-    // we wrap the object in an array so that React doesn't mistake it for something it's not
-    let [r, setR] = (0, react_1.useState)(() => [loader.getState()]);
-    (0, react_1.useEffect)(() => {
-        if (r !== loader.getState()) {
-            setR([loader.getState()]);
+import * as React from 'react';
+export const useLoader = (() => {
+    //let React: any = undefined
+    //try {
+    //  React = require('react')
+    //} catch {
+    //}
+    return function useLoader(arg) {
+        if (typeof arg == 'function') {
+            arg = React.useMemo(() => ({ id: randomLoaderID(), run: arg }), []);
         }
-        return loader.subscribe((r) => setR([r]));
-    }, [loader.id]);
-    return r[0];
-}
-exports.useLoader = useLoader;
-async function runLoader(arg) {
+        let loader = arg instanceof Loader ? arg : new Loader(arg);
+        // we wrap the object in an array so that React doesn't mistake it for something it's not
+        let [r, setR] = React.useState(() => [loader.getState()]);
+        React.useEffect(() => {
+            if (r !== loader.getState()) {
+                setR([loader.getState()]);
+            }
+            return loader.subscribe((r) => setR([r]));
+        }, [loader.id]);
+        return r[0];
+    };
+})();
+export async function runLoader(arg) {
     if (typeof arg == 'function') {
         arg = { id: randomLoaderID(), run: arg };
     }
@@ -290,19 +283,10 @@ async function runLoader(arg) {
         });
     });
 }
-exports.runLoader = runLoader;
-function makeLater() {
-    let resolve, reject;
-    let p = new Promise((_res, _rej) => {
-        resolve = _res;
-        reject = _rej;
-    });
-    return { p, resolve, reject };
-}
 /*
  * Compare to check if should propagate
  */
-function shallowCompare(prev, obj) {
+export function shallowCompare(prev, obj) {
     if (prev === obj)
         return true;
     if (typeof obj != 'object' || typeof prev != 'object')
@@ -317,11 +301,10 @@ function shallowCompare(prev, obj) {
             return false;
     return true;
 }
-exports.shallowCompare = shallowCompare;
 /*
  * Copy to ensure changes to mutable objects arent missed
  */
-function shallowCopy(val) {
+export function shallowCopy(val) {
     if (typeof val != 'object') {
         return val;
     }
@@ -330,7 +313,6 @@ function shallowCopy(val) {
     }
     return { ...val };
 }
-exports.shallowCopy = shallowCopy;
 /*
  * Utility function for an addEventListener interface, i.e.:
  *
@@ -342,7 +324,6 @@ function eventSubscriber(target, type) {
         return () => target.removeEventListener(type, listener);
     };
 }
-exports.eventSubscriber = eventSubscriber;
 const _objectId = (() => {
     let currentId = 0;
     const map = new WeakMap();
@@ -359,4 +340,4 @@ const objectId = (obj) => {
     }
     return String(_objectId(obj));
 };
-exports.anyLoader = new Loader({ id: "void", async run() { } });
+export const anyLoader = new Loader({ id: "void", async run() { } });

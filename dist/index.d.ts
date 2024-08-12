@@ -25,6 +25,9 @@ export type UseApi = {
         <T, A>(id: string, subscribe: Subscribe<T>, selector: (val: T) => A): A;
     };
     cleanup: (cleanup: () => void) => void;
+    event: {
+        <T extends Event>(elem: Eventable, eventKey: string): T | undefined;
+    };
 };
 type ToLoader<T> = LoaderParams<T> | Loader<T>;
 export type LoaderFunc<T> = (use: UseApi, prev: T | undefined) => Promise<T>;
@@ -56,10 +59,9 @@ export declare class Loader<T> implements Loader<T> {
     checkStop(): void;
     static from<A>(arg: ToLoader<A>): Loader<A>;
 }
-export declare function useLoader<T>(arg: ToLoader<T> | LoaderFunc<T>): T | undefined;
+export declare const useLoader: <T>(arg: ToLoader<T> | LoaderFunc<T>) => T | undefined;
 export declare function runLoader<T>(arg: ToLoader<T> | LoaderFunc<T>): Promise<T>;
 export declare function shallowCompare(prev: any, obj: any): boolean;
 export declare function shallowCopy(val: any): any;
-export declare function eventSubscriber<T>(target: Eventable, type: string): Subscribe<T>;
 export declare const anyLoader: Loader<any>;
 export {};

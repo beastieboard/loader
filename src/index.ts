@@ -37,10 +37,10 @@ export type UseApi = {
   //  <T>(id: string, func: LoaderFunc<T>): Promise<T>
   //  <T,A>(id: string, func: LoaderFunc<T>, selector: (val: T) => A): Promise<A>
   //}
-  //eventListener: {
-  //  <T extends Event>(elem: Eventable, eventKey: string): T
-  //  <T extends Event, O>(elem: Eventable, eventKey: string, selector: (event: T) => O): O
-  //}
+  event: {
+    <T extends Event>(elem: Eventable, eventKey: string): T | undefined
+    //<T extends Event, O>(elem: Eventable, eventKey: string, selector: (event: T) => O): O
+  }
 }
 
 
@@ -55,6 +55,7 @@ useOnce.key = () => {}
 useOnce.zustand = (store: any) => store.getState()
 useOnce.subscribe = () => undefined
 useOnce.cleanup = () => {}
+useOnce.event = () => undefined
 
 
 export type LoaderFunc<T> = (use: UseApi, prev: T | undefined) => Promise<T>
@@ -311,18 +312,10 @@ export class Loader<T> implements Loader<T> {
 
     use.cleanup = (cleanup) => this.cleanup.push(cleanup)
 
-    //use.eventListener = (target: Eventable, eventKey: string, selector?: any) => {
-
-    //  return use.subscribe(
-    //    `${objectId(target)}-${eventKey}`,
-    //    (listener) => {
-    //      target.addEventListener(eventKey, listener)
-    //      return () => target.removeEventListener(eventKey, listener)
-    //    },
-    //    selector
-    //  ) as any
-    //}
-    //
+    use.event = (elem, type) => (
+      use.subscribe(`${objectId(elem)}-${type}`, eventSubscriber(elem, type))
+    )
+    
 
     let propagate = (val: T) => {
 
@@ -393,30 +386,39 @@ export class Loader<T> implements Loader<T> {
 }
 
 
-import { useMemo, useEffect, useState } from 'react'
-import {isEmptyObject} from './utils'
+import {isEmptyObject, makeLater} from './utils'
 
 
 const randomLoaderID = () => `loader-${Math.random()}`
 
-export function useLoader<T>(arg: ToLoader<T> | LoaderFunc<T>): T | undefined {
-  if (typeof arg == 'function') {
-    arg = useMemo(() => ({ id: randomLoaderID(), run: arg } as LoaderParams<T>), [])
-  }
-  let loader = arg instanceof Loader ? arg : new Loader(arg)
+import * as React from 'react'
 
-  // we wrap the object in an array so that React doesn't mistake it for something it's not
-  let [r, setR] = useState<[T | undefined]>(() => [loader.getState()])
-
-  useEffect(() => {
-    if (r !== loader.getState()) {
-      setR([loader.getState()])
+export const useLoader = (() => {
+  //let React: any = undefined
+  //try {
+  //  React = require('react')
+  //} catch {
+  //}
+  return function useLoader<T>(arg: ToLoader<T> | LoaderFunc<T>): T | undefined {
+    if (typeof arg == 'function') {
+      arg = React.useMemo(() => ({ id: randomLoaderID(), run: arg } as LoaderParams<T>), [])
     }
-    return loader.subscribe((r) => setR([r]))
-  }, [loader.id])
+    let loader = arg instanceof Loader ? arg : new Loader(arg as any)
 
-  return r[0]
-}
+    // we wrap the object in an array so that React doesn't mistake it for something it's not
+    let [r, setR] = React.useState(() => [loader.getState()])
+
+    React.useEffect(() => {
+      if (r !== loader.getState()) {
+        setR([loader.getState()])
+      }
+      return loader.subscribe((r) => setR([r]))
+    }, [loader.id])
+
+    return r[0] as any
+  }
+})()
+
 
 export async function runLoader<T>(arg: ToLoader<T> | LoaderFunc<T>) {
   if (typeof arg == 'function') {
@@ -430,15 +432,6 @@ export async function runLoader<T>(arg: ToLoader<T> | LoaderFunc<T>) {
       resolve(r)
     })
   })
-}
-
-function makeLater<T=any>() {
-  let resolve: any, reject: any
-  let p = new Promise<T>((_res, _rej) => {
-    resolve = _res
-    reject = _rej
-  })
-  return { p, resolve, reject }
 }
 
 
@@ -480,7 +473,7 @@ export function shallowCopy(val: any) {
  *
  * use.subscribe('resize', eventSubscriber(window, 'resize'))
  */
-export function eventSubscriber<T>(
+function eventSubscriber<T>(
   target: Eventable,
   type: string
 ): Subscribe<T> {
