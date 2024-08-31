@@ -190,7 +190,7 @@ _a = Loader, _Loader_instances = new WeakSet(), _Loader_guts = function _Loader_
     const use = async (...args) => {
         let loader;
         if (args.length == 2) {
-            let id = `!loader-${args[1]}`;
+            let id = `${this.id}/${args[1]}`;
             loader = new _a({ id, run: args[0] });
         }
         else {
@@ -247,7 +247,7 @@ _a = Loader, _Loader_instances = new WeakSet(), _Loader_guts = function _Loader_
     return { unusedDeps, subscribeCalls, schedule, cacheKey, propagate, use };
 };
 import { isEmptyObject, makeLater } from './utils';
-const randomLoaderID = () => `loader-${Math.random()}`;
+const randomLoaderID = () => `anon-${Math.random()}`;
 import * as React from 'react';
 export const useLoader = (() => {
     //let React: any = undefined
