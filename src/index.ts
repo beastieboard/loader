@@ -1,5 +1,4 @@
-import { UseBoundStore, StoreApi } from 'zustand'
-
+import { StoreApi } from 'zustand'
 
 
 type Listener<T> = (val: T) => void
@@ -24,8 +23,8 @@ export type UseApi = {
   schedule: (ms: number) => void
   key: (key: any) => void
   zustand: {
-    <T>(store: UseBoundStore<StoreApi<T>>): T
-    <T,A>(id: string, store: UseBoundStore<StoreApi<T>>, selector: (val: T) => A): A
+    <T>(store: StoreApi<T>): T
+    <T,A>(id: string, store: StoreApi<T>, selector: (val: T) => A): A
   }
   subscribe: {
     <T>(id: string, subscribe: Subscribe<T>): T,
