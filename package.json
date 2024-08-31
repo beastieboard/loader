@@ -16,7 +16,7 @@
     "typescript": "^5.2.2",
     "vitest": "^2.0.5"
   },
-  "dependencies": {
+  "peerDependencies": {
     "react": "^18.2.0",
     "zustand": "^4.4.1"
   }

@@ -278,7 +278,7 @@ export class Loader<T> implements Loader<T> {
       let loader: Loader<any>
 
       if (args.length == 2) {
-        let id = `!loader-${args[1]}`
+        let id = `${this.id}/${args[1]}`
         loader = new Loader({ id, run: args[0] })
       } else {
         loader = Loader.from(args[0])
@@ -389,7 +389,7 @@ export class Loader<T> implements Loader<T> {
 import {isEmptyObject, makeLater} from './utils'
 
 
-const randomLoaderID = () => `loader-${Math.random()}`
+const randomLoaderID = () => `anon-${Math.random()}`
 
 import * as React from 'react'
 
