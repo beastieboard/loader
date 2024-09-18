@@ -49,6 +49,15 @@ export class Loader {
             this.checkStop();
         };
     }
+    extend(suffix, f) {
+        let that = this;
+        return new _a({
+            id: `${this.id}/extend:${suffix}`,
+            async run(use) {
+                return f(await use(that));
+            }
+        });
+    }
     getState() {
         return this.last?.val;
     }

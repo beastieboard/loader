@@ -133,6 +133,16 @@ export class Loader<T> implements Loader<T> {
     }
   }
 
+  extend<O>(suffix: string, f: (val: T) => Promise<O>) {
+    let that = this
+    return new Loader({
+      id: `${this.id}/extend:${suffix}`,
+      async run(use) {
+        return f(await use(that))
+      }
+    })
+  }
+
   getState(): T | undefined {
     return this.last?.val
   }

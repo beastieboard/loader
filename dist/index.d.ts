@@ -52,6 +52,7 @@ export declare class Loader<T> implements Loader<T> {
     readonly run: LoaderFunc<T>;
     constructor(params: LoaderParams<T>);
     subscribe(listener: Listener<T>, reason?: string): Unsubscribe;
+    extend<O>(suffix: string, f: (val: T) => Promise<O>): Loader<O>;
     getState(): T | undefined;
     once(): Promise<T | undefined>;
     trigger(): Promise<T>;
